@@ -1,9 +1,1 @@
-[2025-06-11T04:33:15.791Z] Email tracking server started on http://localhost:3000
-[2025-06-11T04:36:52.917Z] Email tracking server started on http://localhost:3000
-[2025-06-11T04:37:39.181Z] Email tracking server started on http://localhost:3000
-[2025-06-11T04:44:57.044Z] Email tracking server started on http://localhost:3000
-[2025-06-11T04:55:46.928Z] First access for tracking ID: track_1749617746917_3imr6i5a (likely Gmail or sender, UA: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36)
-[2025-06-11T04:55:46.942Z] Email sent with tracking ID: track_1749617746917_3imr6i5a at 2025-06-11T04:55:46.917Z
-[2025-06-11T05:01:10.870Z] Email tracking server started on http://localhost:3000
-[2025-06-11T05:01:33.794Z] Email sent with tracking ID: track_1749618093634_9ocrofnrz at 2025-06-11T05:01:33.774Z
-[2025-06-11T05:06:44.713Z] Email sent with tracking ID: track_1749618404556_77ty5vkug at 2025-06-11T05:06:44.707Z
+
