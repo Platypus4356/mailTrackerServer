@@ -4,10 +4,14 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 
 // Path to our tracking log file
@@ -85,15 +89,25 @@ app.get('/track/:trackingId', (req, res) => {
   const userAgent = req.get('User-Agent') || '';
   const now = Date.now();
 
-  // Simple bot filter
-  const isDefinitelyBot = isBot(userAgent);
-  const alreadyLogged = firstAccessTimes.get(trackingId + '_opened');
+  const firstSeenKey = `${trackingId}_firstSeen`;
+  const openedKey = `${trackingId}_opened`;
 
-  if (!alreadyLogged && !isDefinitelyBot) {
-    writeToLog(`Email opened - Tracking ID: ${trackingId} (UA: ${userAgent})`);
-    firstAccessTimes.set(trackingId + '_opened', true);
-  } else if (!alreadyLogged && isDefinitelyBot) {
-    writeToLog(`Bot skipped open log - Tracking ID: ${trackingId} (UA: ${userAgent})`);
+  const firstSeen = firstAccessTimes.get(firstSeenKey);
+  const hasOpened = firstAccessTimes.get(openedKey);
+
+  // Set the first seen time if it doesn't exist
+  if (!firstSeen) {
+    firstAccessTimes.set(firstSeenKey, now);
+    writeToLog(`First access for tracking ID: ${trackingId} (assumed preload or sender, UA: ${userAgent})`);
+  } else if (!hasOpened) {
+    const timeSinceFirstSeen = now - firstSeen;
+
+    if (isRealBrowser(userAgent) || timeSinceFirstSeen > 15000) {
+      writeToLog(`Email opened - Tracking ID: ${trackingId} (delay: ${timeSinceFirstSeen}ms, UA: ${userAgent})`);
+      firstAccessTimes.set(openedKey, true);
+    } else {
+      writeToLog(`Skipped open log - Tracking ID: ${trackingId} (too soon: ${timeSinceFirstSeen}ms, UA: ${userAgent})`);
+    }
   }
 
   // Always serve the pixel
