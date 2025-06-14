@@ -1,172 +1,269 @@
 const express = require('express');
-const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
+const TRACKING_LOG_FILE = 'tracklog.txt';
 
 // Middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
 app.use(express.json());
+app.use(express.static('public'));
 
-// Path to our tracking log file
-const LOG_FILE = path.join(__dirname, 'tracklog.txt');
-
-// Initialize log file if it doesn't exist
-if (!fs.existsSync(LOG_FILE)) {
-  fs.writeFileSync(LOG_FILE, 'Email Tracking Log\n===================\n\n');
-}
-
-// Function to write to log file with simple log rotation (5MB)
-function writeToLog(message) {
-  try {
-    const maxSize = 5 * 1024 * 1024; // 5MB
-    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > maxSize) {
-      const rotated = LOG_FILE.replace('.txt', `_${Date.now()}.txt`);
-      fs.renameSync(LOG_FILE, rotated);
-      fs.writeFileSync(LOG_FILE, 'Email Tracking Log\n===================\n\n');
-    }
-  } catch (e) {
-    console.error('Log rotation error:', e);
-  }
-  const timestamp = new Date().toISOString();
-  const logEntry = `[${timestamp}] ${message}\n`;
-  fs.appendFileSync(LOG_FILE, logEntry);
-  console.log(logEntry.trim());
-}
-
-// Function to read tracking data from log
-function getTrackingStats() {
-  try {
-    const logContent = fs.readFileSync(LOG_FILE, 'utf8');
-    const sentEmails = (logContent.match(/Email sent with tracking ID/g) || []).length;
-    const openedEmails = (logContent.match(/Email opened - Tracking ID/g) || []).length;
-    const openRate = sentEmails > 0 ? Math.round((openedEmails / sentEmails) * 100) : 0;
+// CORS middleware
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     
-    return {
-      totalSent: sentEmails,
-      totalOpened: openedEmails,
-      openRate: openRate
-    };
-  } catch (error) {
-    return { totalSent: 0, totalOpened: 0, openRate: 0 };
-  }
-}
-
-// Helper: Validate trackingId (alphanumeric, dash, underscore, 5-64 chars)
-const isValidTrackingId = id => /^[a-zA-Z0-9-_]{5,64}$/.test(id);
-
-// Routes
-
-const firstAccessTimes = new Map();
-
-// Helper to check if User-Agent is a real browser
-function isRealBrowser(userAgent) {
-  if (!userAgent) return false;
-  const ua = userAgent.toLowerCase();
-  return ua.includes('mozilla') && (ua.includes('chrome') || ua.includes('firefox') || ua.includes('safari'));
-}
-
-// Helper to check if User-Agent is a bot/crawler
-function isBot(userAgent) {
-  if (!userAgent) return false;
-  const ua = userAgent.toLowerCase();
-  return ua.includes('bot') || ua.includes('crawler') || ua.includes('spider') || ua.includes('googleimageproxy');
-}
-
-// Track email opens (this is called when the tracking pixel is loaded)
-app.get('/track/:trackingId', (req, res) => {
-  const trackingId = req.params.trackingId;
-  if (!isValidTrackingId(trackingId)) {
-    return res.status(400).send('Invalid tracking ID');
-  }
-
-  const userAgent = req.get('User-Agent') || '';
-  const now = Date.now();
-
-  const firstSeenKey = `${trackingId}_firstSeen`;
-  const openedKey = `${trackingId}_opened`;
-
-  const firstSeen = firstAccessTimes.get(firstSeenKey);
-  const hasOpened = firstAccessTimes.get(openedKey);
-
-  // Set the first seen time if it doesn't exist
-  if (!firstSeen) {
-    firstAccessTimes.set(firstSeenKey, now);
-    writeToLog(`First access for tracking ID: ${trackingId} (assumed preload or sender, UA: ${userAgent})`);
-  } else if (!hasOpened) {
-    const timeSinceFirstSeen = now - firstSeen;
-
-    if (isRealBrowser(userAgent) || timeSinceFirstSeen > 15000) {
-      writeToLog(`Email opened - Tracking ID: ${trackingId} (delay: ${timeSinceFirstSeen}ms, UA: ${userAgent})`);
-      firstAccessTimes.set(openedKey, true);
-    } else {
-      writeToLog(`Skipped open log - Tracking ID: ${trackingId} (too soon: ${timeSinceFirstSeen}ms, UA: ${userAgent})`);
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+        return;
     }
-  }
-
-  // Always serve the pixel
-  const pixel = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-    'base64'
-  );
-
-  res.set({
-    'Content-Type': 'image/png',
-    'Content-Disposition': 'inline; filename="pixel.png"',
-    'Content-Length': pixel.length,
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0',
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-    'Referrer-Policy': 'no-referrer'
-  });
-
-  res.send(pixel);
+    
+    next();
 });
 
+// Initialize tracking log file if it doesn't exist
+function initializeLogFile() {
+    if (!fs.existsSync(TRACKING_LOG_FILE)) {
+        fs.writeFileSync(TRACKING_LOG_FILE, '', 'utf8');
+        console.log('📄 Created tracking log file');
+    }
+}
 
-// Create new tracking entry
-app.post('/api/create-tracking', (req, res) => {
-  const { trackingId, timestamp, status } = req.body;
-  if (!isValidTrackingId(trackingId)) {
-    return res.status(400).json({ error: 'Invalid tracking ID' });
-  }
-  writeToLog(`Email sent with tracking ID: ${trackingId} at ${timestamp}`);
-  res.json({ success: true, trackingId });
+// Enhanced tracking endpoint - FIXED LOGIC
+app.get('/track/:emailId/:timestamp?/:random?', (req, res) => {
+    const emailId = req.params.emailId;
+    const timestamp = new Date().toISOString();
+    const userAgent = req.get('User-Agent') || '';
+    const referrer = req.get('Referer') || req.get('Referrer') || '';
+    const realIp = req.get('X-Forwarded-For') ? req.get('X-Forwarded-For').split(',')[0] : req.ip;
+    
+    // Enhanced Gmail proxy detection
+    const isGmailProxy = userAgent.includes('GoogleImageProxy') || 
+                        userAgent.includes('Google') || 
+                        userAgent.includes('ggpht.com') ||
+                        userAgent.includes('googleusercontent.com');
+    
+    // Detailed logging
+    console.log('════════════════════════════════════════');
+    console.log(`📧 EMAIL TRACKING EVENT`);
+    console.log(`Email ID: ${emailId}`);
+    console.log(`Timestamp: ${timestamp}`);
+    console.log(`IP: ${realIp}`);
+    console.log(`User-Agent: ${userAgent}`);
+    console.log(`Referrer: ${referrer}`);
+    console.log(`Gmail Proxy: ${isGmailProxy}`);
+    console.log('════════════════════════════════════════');
+    
+    // Create log entry
+    const logEntry = {
+        emailId,
+        timestamp,
+        ip: realIp,
+        userAgent,
+        referrer,
+        isGmailProxy: isGmailProxy
+    };
+    
+    // FIXED: Only skip obvious bots/crawlers, NOT Gmail proxy requests
+    const isBot = userAgent.toLowerCase().includes('bot') || 
+                  userAgent.toLowerCase().includes('crawler') ||
+                  userAgent.toLowerCase().includes('spider') ||
+                  userAgent.toLowerCase().includes('slurp');
+    
+    // Log all legitimate opens (including Gmail proxy requests)
+    if (!isBot && emailId && emailId.length > 5) {
+        try {
+            fs.appendFileSync(TRACKING_LOG_FILE, JSON.stringify(logEntry) + '\n');
+            console.log(`✅ Successfully logged email open: ${emailId}`);
+        } catch (error) {
+            console.error('❌ Failed to log email open:', error);
+        }
+    } else {
+        console.log(`⚠️ Skipped logging - Bot: ${isBot}, EmailID: ${emailId}`);
+    }
+    
+    // Return 1x1 transparent tracking pixel
+    const pixel = Buffer.from(
+        'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+        'base64'
+    );
+    
+    res.set({
+        'Content-Type': 'image/gif',
+        'Content-Length': pixel.length,
+        'Cache-Control': 'no-cache, no-store, must-revalidate, private',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Last-Modified': new Date().toUTCString()
+    });
+    
+    res.send(pixel);
 });
 
-// Get tracking statistics
-app.get('/api/stats', (req, res) => {
-  const stats = getTrackingStats();
-  res.json(stats);
+// Enhanced API to check tracking status
+app.get('/api/email/:emailId/status', (req, res) => {
+    const emailId = req.params.emailId;
+    
+    if (!emailId) {
+        return res.status(400).json({
+            success: false,
+            error: 'Email ID is required'
+        });
+    }
+    
+    try {
+        let emailLogs = [];
+        
+        if (fs.existsSync(TRACKING_LOG_FILE)) {
+            const content = fs.readFileSync(TRACKING_LOG_FILE, 'utf8');
+            const lines = content.split('\n').filter(line => line.trim());
+            
+            emailLogs = lines
+                .map(line => {
+                    try {
+                        return JSON.parse(line);
+                    } catch (e) {
+                        console.error('Failed to parse log line:', line);
+                        return null;
+                    }
+                })
+                .filter(log => log && log.emailId === emailId)
+                .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        }
+        
+        const response = {
+            success: true,
+            emailId: emailId,
+            opened: emailLogs.length > 0,
+            openCount: emailLogs.length,
+            firstOpened: emailLogs.length > 0 ? emailLogs[0].timestamp : null,
+            lastOpened: emailLogs.length > 0 ? emailLogs[emailLogs.length - 1].timestamp : null,
+            opens: emailLogs.map(log => ({
+                timestamp: log.timestamp,
+                ip: log.ip,
+                userAgent: log.userAgent,
+                isGmailProxy: log.isGmailProxy
+            }))
+        };
+        
+        console.log(`📊 Status check for ${emailId}: ${emailLogs.length} opens`);
+        res.json(response);
+        
+    } catch (error) {
+        console.error('Error checking email status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
-// Get full tracking log
-app.get('/api/log', (req, res) => {
-  try {
-    const logContent = fs.readFileSync(LOG_FILE, 'utf8');
-    res.json({ log: logContent });
-  } catch (error) {
-    res.status(500).json({ error: 'Could not read log file' });
-  }
+// Bulk status check endpoint
+app.post('/api/emails/status', (req, res) => {
+    const { emailIds } = req.body;
+    
+    if (!Array.isArray(emailIds)) {
+        return res.status(400).json({
+            success: false,
+            error: 'emailIds must be an array'
+        });
+    }
+    
+    try {
+        const results = {};
+        
+        if (fs.existsSync(TRACKING_LOG_FILE)) {
+            const content = fs.readFileSync(TRACKING_LOG_FILE, 'utf8');
+            const lines = content.split('\n').filter(line => line.trim());
+            
+            const allLogs = lines
+                .map(line => {
+                    try {
+                        return JSON.parse(line);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .filter(log => log);
+            
+            emailIds.forEach(emailId => {
+                const emailLogs = allLogs
+                    .filter(log => log.emailId === emailId)
+                    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                
+                results[emailId] = {
+                    opened: emailLogs.length > 0,
+                    openCount: emailLogs.length,
+                    firstOpened: emailLogs.length > 0 ? emailLogs[0].timestamp : null,
+                    lastOpened: emailLogs.length > 0 ? emailLogs[emailLogs.length - 1].timestamp : null
+                };
+            });
+        } else {
+            emailIds.forEach(emailId => {
+                results[emailId] = {
+                    opened: false,
+                    openCount: 0,
+                    firstOpened: null,
+                    lastOpened: null
+                };
+            });
+        }
+        
+        res.json({
+            success: true,
+            results: results
+        });
+        
+    } catch (error) {
+        console.error('Error checking bulk email status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
-// Health check
+// Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'Server is running', timestamp: new Date().toISOString() });
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        logFileExists: fs.existsSync(TRACKING_LOG_FILE)
+    });
 });
 
-// Start server
-app.listen(PORT, () => {
-  writeToLog(`Email tracking server started on http://localhost:${PORT}`);
-  console.log(`🚀 Email Tracker Server running on http://localhost:${PORT}`);
-  console.log(`📊 View stats at: http://localhost:${PORT}/api/stats`);
-  console.log(`📝 View logs at: http://localhost:${PORT}/api/log`);
+// Error handling middleware
+app.use((error, req, res, next) => {
+    console.error('Server error:', error);
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error'
+    });
+});
+
+// Initialize and start server
+initializeLogFile();
+
+app.listen(port, '0.0.0.0', () => {
+    console.log(`🚀 Email tracker server running on port ${port}`);
+    console.log(`📍 Tracking endpoint: /track/:emailId/:timestamp/:random`);
+    console.log(`📍 Status API: /api/email/:emailId/status`);
+    console.log(`📍 Bulk Status API: /api/emails/status`);
+    console.log(`📍 Health check: /health`);
+    console.log(`📄 Log file: ${TRACKING_LOG_FILE}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🔄 Shutting down server gracefully...');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('🔄 Shutting down server gracefully...');
+    process.exit(0);
 });
