@@ -11,6 +11,7 @@ const port = process.env.PORT || 3000;
 const TRACKING_LOG_FILE = path.join(__dirname, 'tracklog.jsonl');
 const MAX_LOG_SIZE = 5 * 1024 * 1024;
 const logCache = new Map();
+const firstSeenTimestamps = new Map(); 
 
 let version = { commit: 'unknown' };
 try {
@@ -74,26 +75,34 @@ app.get('/track/:emailId/:timestamp?/:random?', trackLimiter, (req, res) => {
     return res.status(400).send('Invalid email ID');
   }
 
-  const timestamp = new Date().toISOString();
+  const now = Date.now();
   const userAgent = req.get('User-Agent') || '';
   const referrer = req.get('Referer') || req.get('Referrer') || '';
-  const realIp = req.get('X-Forwarded-For')?.split(',')[0] || req.ip;
 
-  console.log(`Tracking request from ${realIp} UA: ${userAgent}`);
+  
+  if (!firstSeenTimestamps.has(emailId)) {
+    firstSeenTimestamps.set(emailId, now);
+    console.log(`First seen for ${emailId} at ${new Date(now).toISOString()}`);
+  }
+
+  const firstSeen = firstSeenTimestamps.get(emailId);
+  const delayPassed = (now - firstSeen) >= 10000; 
 
   const isGmailProxy = /google|ggpht|googleusercontent/i.test(userAgent);
   const isBot = /bot|crawler|spider|slurp/i.test(userAgent);
 
-  if (!isGmailProxy && !isBot) {
-    const entry = { emailId, timestamp, ip: realIp, userAgent, referrer, isGmailProxy };
+  
+  if (!isBot && delayPassed) {
+    const timestamp = new Date().toISOString();
+    const entry = { emailId, timestamp, userAgent, referrer };
     rotateLogFile();
     logEvent(entry);
     console.log(`Logged open: ${emailId}`);
   } else {
     if (isBot) {
       console.log(`Bot detected, not logging: ${emailId}`);
-    } else if (isGmailProxy) {
-      console.log(`Gmail proxy detected, not logging: ${emailId}`);
+    } else if (!delayPassed) {
+      console.log(`Delay not passed for ${emailId}, not logging yet`);
     }
   }
 
